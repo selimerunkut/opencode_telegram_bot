@@ -1,0 +1,39 @@
+version: "3.8"
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: opencode-bot-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+
+  bot:
+    build: .
+    container_name: opencode-telegram-bot
+    restart: unless-stopped
+    depends_on:
+      - redis
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_ALLOWED_USER_IDS=${TELEGRAM_ALLOWED_USER_IDS}
+      - OPENCODE_API_URL=${OPENCODE_API_URL}
+      - OPENCODE_PROJECT_PATH=${OPENCODE_PROJECT_PATH}
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=sqlite://./data/bot.db
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    volumes:
+      - ./data:/app/data
+      - ${OPENCODE_PROJECT_PATH}:${OPENCODE_PROJECT_PATH}
+    networks:
+      - opencode-bot-network
+
+volumes:
+  redis_data:
+
+networks:
+  opencode-bot-network:
+    driver: bridge

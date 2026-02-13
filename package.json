@@ -1,0 +1,49 @@
+{
+  "name": "opencode-telegram-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot interface for OpenCode AI",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "nodemon --exec ts-node --esm src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "test": "vitest",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "docker:build": "docker build -t opencode-telegram-bot .",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down"
+  },
+  "keywords": ["opencode", "telegram", "bot", "ai", "chat"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@opencode-ai/sdk": "latest",
+    "grammy": "^1.21.1",
+    "redis": "^4.6.12",
+    "ioredis": "^5.3.2",
+    "better-sqlite3": "^9.4.3",
+    "dotenv": "^16.4.5",
+    "winston": "^3.11.0",
+    "zod": "^3.22.4",
+    "eventsource-parser": "^1.1.2",
+    "mime-types": "^2.1.35"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.8",
+    "@types/mime-types": "^2.1.4",
+    "@types/node": "^20.11.0",
+    "@biomejs/biome": "^1.5.3",
+    "nodemon": "^3.0.3",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3",
+    "vitest": "^1.2.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
