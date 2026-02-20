@@ -22,3 +22,9 @@ export interface SessionInfo {
   createdAt: Date;
   lastAccessed: Date;
 }
+
+export interface UserAddedProject {
+  path: string;
+  addedAt: Date;
+  addedBy: number;
+}

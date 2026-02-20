@@ -1,5 +1,5 @@
 import { createBot } from "./bot/commands.js";
-import { initializeOpenCodeClients, getOpenCodeClient } from "./opencode/client.js";
+import { initializeOpenCodeClientsWithAutoStart, getOpenCodeClient, cleanupSpawnedProcesses } from "./opencode/client.js";
 import { SessionManager } from "./services/session-manager.js";
 import { MessageService } from "./services/message-service.js";
 import { RedisStorage } from "./storage/redis.js";
@@ -20,92 +20,49 @@ async function main() {
     storage = new MemoryStorage();
   }
 
-  initializeOpenCodeClients(config.opencode.instances);
+  await initializeOpenCodeClientsWithAutoStart(config.opencode.instances);
   logger.info(`✅ Initialized ${config.opencode.instances.length} OpenCode instance(s)`);
 
   const sessionManager = new SessionManager(storage);
-  const { bot, getPendingAction } = createBot(storage, sessionManager);
-  const messageService = new MessageService(bot, storage, sessionManager);
 
-  bot.use(async (ctx, next) => {
+  const messageService = new MessageService(
+    null as never,
+    storage,
+    sessionManager
+  );
+
+  const { bot, setEventHandler } = createBot(
+    storage,
+    sessionManager,
+    (userId, text) => messageService.handleIncomingMessage(userId, text)
+  );
+
+  messageService.setBot(bot);
+
+  setEventHandler((event, instanceId) => {
+    messageService.routeEventToUser({ ...event, instanceId });
+  });
+
+  bot.command("stop", async (ctx) => {
     const userId = ctx.from?.id;
     if (!userId) return;
-
-    const pendingAction = getPendingAction(userId);
-    if (pendingAction) {
-      try {
-        switch (pendingAction.action) {
-          case "create": {
-            const session = await sessionManager.createSession(userId, pendingAction.title, pendingAction.instanceId);
-            await ctx.reply(`✅ Session created: "${session.title}"\nID: \`${session.id}\``, {
-              parse_mode: "MarkdownV2",
-            });
-            break;
-          }
-          case "message": {
-            if (pendingAction.text) {
-              await messageService.handleIncomingMessage(userId, pendingAction.text);
-            }
-            break;
-          }
-          case "stop": {
-            if (pendingAction.sessionId) {
-              const state = await sessionManager.getOrCreateUserState(userId, 0);
-              if (state.currentInstanceId) {
-                const client = getOpenCodeClient(state.currentInstanceId);
-                const success = await client.abortSession(pendingAction.sessionId);
-                if (success) {
-                  await ctx.reply("✅ Session stopped successfully.");
-                } else {
-                  await ctx.reply("❌ Failed to stop session.");
-                }
-              }
-            }
-            break;
-          }
-        }
-      } catch (error) {
-        logger.error("Error handling action:", error);
-        await ctx.reply(`❌ Error: ${error instanceof Error ? error.message : "Unknown error"}`);
-      }
+    const state = await sessionManager.getOrCreateUserState(userId, 0);
+    if (!state.currentSessionId || !state.currentInstanceId) {
+      await ctx.reply("📭 No active session to stop.");
+      return;
     }
-
-    await next();
+    try {
+      const client = getOpenCodeClient(state.currentInstanceId);
+      const success = await client.abortSession(state.currentSessionId);
+      await ctx.reply(success ? "✅ Session stopped." : "❌ Failed to stop session.");
+    } catch (error) {
+      await ctx.reply(`❌ Error: ${error instanceof Error ? error.message : "Unknown error"}`);
+    }
   });
 
   bot.catch((err) => {
     logger.error("Bot error:", err);
   });
-
-  try {
-    logger.info("📡 Starting long polling...");
-    await bot.start({
-      drop_pending_updates: true,
-      onStart: () => {
-        logger.info("✅ Bot started successfully!");
-      },
-    });
-  } catch (error) {
-    logger.error("Failed to start bot:", error);
-    process.exit(1);
-  }
-
-  const cleanup = async () => {
-    logger.info("🛑 Shutting down...");
-    await bot.stop();
-    process.exit(0);
-  };
-
-  process.on("SIGINT", cleanup);
-  process.on("SIGTERM", cleanup);
-
-  setInterval(async () => {
-    try {
-      await sessionManager.cleanupOldSessions();
-    } catch (error) {
-      logger.error("Error cleaning up sessions:", error);
-    }
-  }, 60000);
 
   const unsubscribers: Array<() => void> = [];
 
@@ -123,11 +80,39 @@ async function main() {
     }
   }
 
-  process.on("SIGINT", async () => {
+  setInterval(async () => {
+    try {
+      await sessionManager.cleanupOldSessions();
+    } catch (error) {
+      logger.error("Error cleaning up sessions:", error);
+    }
+  }, 60000);
+
+  const cleanup = async () => {
+    logger.info("🛑 Shutting down...");
     for (const unsubscribe of unsubscribers) {
       unsubscribe();
     }
-  });
+    cleanupSpawnedProcesses();
+    await bot.stop();
+    process.exit(0);
+  };
+
+  process.on("SIGINT", cleanup);
+  process.on("SIGTERM", cleanup);
+
+  try {
+    logger.info("📡 Starting long polling...");
+    await bot.start({
+      drop_pending_updates: true,
+      onStart: () => {
+        logger.info("✅ Bot started successfully!");
+      },
+    });
+  } catch (error) {
+    logger.error("Failed to start bot:", error);
+    process.exit(1);
+  }
 }
 
 main().catch((error) => {
