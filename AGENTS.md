@@ -203,3 +203,99 @@ when needed (see Vitest docs), or run a specific file via the Vitest CLI.
 - Verify `.gitignore` is configured
 - Use `git add -A` cautiously - prefer explicit file selection
 - Review every file in staging area with `git diff --cached`
+
+## OpenCode API Reference
+
+### Endpoints
+
+- **Events**: `GET /event?directory=<path>` (SSE stream, NOT `/event/subscribe`)
+- **Sessions**: `GET /session`, `POST /session`, `GET /session/:id`
+- **Messages**: `POST /session/:id/message`, `GET /session/:id/message` (NOT `/prompt` or `/messages`)
+- **Providers**: `GET /provider` → returns `{ all: [...] }`, NOT a raw array
+- **Abort**: `POST /session/:id/abort`
+
+### Event Types & Properties
+
+Events arrive via SSE as:
+```json
+{ "directory": "...", "payload": { "type": "event.type", "properties": { ... } } }
+```
+Parse with: `event = raw.payload ?? raw` (initial `server.connected` has no wrapper)
+
+**Event types:**
+- `message.part.updated` → `{ part: { id, sessionID, messageID, type, text? }, delta?: string }`
+  - Buffer `delta` only when `part.type === "text"` (skip `"reasoning"`)
+- `message.updated` → `{ info: { id, sessionID, role, finish? } }`
+  - Flush buffer only when `finish` is set (message complete)
+- `session.status` → `{ sessionID, status: { type: "idle"|"busy"|... } }`
+- `session.error` → `{ sessionID, error: string }`
+- `todo.updated` → `{ sessionID, todos: [...] }`
+- `permission.updated` → `{ id, type, title, sessionID, ... }`
+
+**Important**: Property is `sessionID` (capital D), not `sessionId`.
+
+## Telegram Bot Architecture
+
+### Message Flow
+
+1. User sends message → `commands.ts` `message:text` handler
+2. Calls `onMessage(userId, text)` → `messageService.handleIncomingMessage()`
+3. `sessionManager.sendMessage()` → OpenCode API `POST /session/:id/message`
+4. OpenCode processes → sends events via SSE
+5. Events routed via `routeEventToUser()` → `findUserBySession()` → `handleOpenCodeEvent()`
+6. Response chunks sent back to Telegram
+
+### Event Subscription Timing
+
+**CRITICAL**: Subscribe to OpenCode events BEFORE `bot.start()`. The `bot.start()` call blocks, so events won't be received if subscription happens after.
+
+```typescript
+// CORRECT ORDER:
+const unsubscribe = await client.subscribeToEvents(callback);
+await bot.start();
+
+// WRONG (events missed):
+await bot.start();  // blocks!
+const unsubscribe = await client.subscribeToEvents(callback);
+```
+
+### Telegram Callback Data Limit
+
+**IMPORTANT**: Telegram callback button data is limited to 64 bytes.
+
+**Wrong** (exceeds limit):
+```typescript
+keyboard.text("Session", `attach_session:${instanceId}:${sessionId}`);
+```
+
+**Correct** (use index):
+```typescript
+sessionSelections.set(userId, sessions.map(s => ({ instanceId, sessionId: s.id })));
+keyboard.text("Session", `attach_session:0`);
+```
+
+### Dynamic Instance Management
+
+When user selects a project:
+1. Check if OpenCode already running for that path: `findExistingOpenCodeForPath()`
+2. If running: attach to existing instance, list sessions
+3. If not: spawn new instance on available port (3100+), subscribe to events
+
+Port detection uses `findAvailablePort()` to avoid collisions.
+
+## Quick Restart Command
+
+```bash
+pkill -f "node dist/index.js"; (node dist/index.js >> bot.log 2>&1 &) && sleep 2 && tail -5 bot.log
+```
+
+## Common Issues & Fixes
+
+| Issue | Cause | Fix |
+|-------|-------|-----|
+| "Unexpected end of JSON input" | Empty API response | Check response.text() before .json() |
+| "BUTTON_DATA_INVALID" | Callback data >64 bytes | Use index-based selection |
+| "No user found for session" | Session not in storage | Sessions lost on restart (memory storage) |
+| "ModelNotFoundError" | Provider not configured | Use `/providers` to select model |
+| "Failed to start server on port X" | Port collision | `findAvailablePort()` finds next free |
+| Events not received | Subscription after bot.start() | Subscribe before bot.start() |
